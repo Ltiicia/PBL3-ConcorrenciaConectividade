@@ -1,7 +1,7 @@
 FROM golang:1.24-alpine AS builder
 WORKDIR /app
 COPY . .
-RUN go build -o veiculo main.go
+RUN go build -o veiculo .
 
 FROM alpine:latest
 WORKDIR /app
