@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 )
 
 type Transacao struct {
@@ -190,20 +189,12 @@ func pagarRecargasPendentes(placa string) {
 	}
 }
 
-func formatarTimestamp(data_hora string) string {
-	data, erro := time.Parse(time.RFC3339, data_hora)
-	if erro != nil {
-		return data_hora
-	}
-	return data.Format("15:04:05 02/01/2006")
-}
-
 func verExtrato(placa string) {
 	chain := buscarBlockchain()
 	fmt.Println("\nExtrato de transações:")
 	for _, bloco := range chain.Chain {
 		if bloco.Transacao.Placa == placa {
-			fmt.Printf("%s | %s | %s | %s | R$ %.2f\n", formatarTimestamp(bloco.Timestamp), bloco.Transacao.Tipo, bloco.Transacao.Ponto, bloco.Transacao.Empresa, bloco.Transacao.Valor)
+			fmt.Printf("%s | %s     | %s    | %s | R$ %.2f\n", bloco.Timestamp, bloco.Transacao.Tipo, bloco.Transacao.Ponto, bloco.Transacao.Empresa, bloco.Transacao.Valor)
 		}
 	}
 }
