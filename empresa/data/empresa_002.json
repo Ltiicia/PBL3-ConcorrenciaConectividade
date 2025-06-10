@@ -1,0 +1,12 @@
+{
+  "id": "002",
+  "nome": "N-Centro",
+  "api": "http://empresa_002:8002",
+  "saldo_atual": 0,
+  "placas": {},
+  "pontos": [
+    "Recife",
+    "Joao Pessoa",
+    "Natal"
+  ]
+}

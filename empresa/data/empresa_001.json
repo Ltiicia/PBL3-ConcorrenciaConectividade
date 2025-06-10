@@ -1,0 +1,12 @@
+{
+  "id": "001",
+  "nome": "N-Sul",
+  "api": "http://empresa_001:8001",
+  "saldo_atual": 0,
+  "placas": {},
+  "pontos": [
+    "Salvador",
+    "Aracaju",
+    "Maceio"
+  ]
+}

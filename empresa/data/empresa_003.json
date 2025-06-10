@@ -1,0 +1,12 @@
+{
+  "id": "003",
+  "nome": "N-Norte",
+  "api": "http://empresa_003:8003",
+  "saldo_atual": 0,
+  "placas": {},
+  "pontos": [
+    "Fortaleza",
+    "Teresina",
+    "Sao Luis"
+  ]
+}
