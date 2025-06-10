@@ -506,9 +506,84 @@ func pagamentoHandler(writer http.ResponseWriter, r *http.Request) {
 	writer.WriteHeader(http.StatusCreated)
 }
 
+// Handler para reserva
+func reservaHandler(writer http.ResponseWriter, request *http.Request) {
+	var transacao Transacao
+	if erro := json.NewDecoder(request.Body).Decode(&transacao); erro != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Verifica se o ponto pertence a esta empresa
+	pontoValido := false
+	for _, ponto := range empresa.Pontos {
+		if ponto == transacao.Ponto {
+			pontoValido = true
+			break
+		}
+	}
+
+	if !pontoValido {
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	ultimo := blockchain.Chain[len(blockchain.Chain)-1]
+	hash := CalcularHash(Bloco{
+		Index:        (ultimo.Index + 1),
+		Timestamp:    formatarTimestamp(time.Now().UTC().Format(time.RFC3339)),
+		Transacao:    transacao,
+		HashAnterior: ultimo.Hash,
+		Autor:        empresa.ID,
+	})
+	assinatura, erro := AssinarBloco(hash, chave_privada_path)
+	if erro != nil {
+		writer.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	novo_bloco := NovoBloco(transacao, ultimo, empresa.ID, assinatura)
+	if blocoDuplicado(novo_bloco) {
+		fmt.Printf("Bloco duplicado detectado - index [%d] hash (%s). Rejeitando...\n", novo_bloco.Index, novo_bloco.Hash)
+		writer.WriteHeader(http.StatusConflict)
+		return
+	}
+	blockchain.Chain = append(blockchain.Chain, novo_bloco)
+	SalvarBlockchain("data/chain_"+empresa.ID+".json", blockchain)
+	propagarBlocoComConsenso(novo_bloco)
+
+	// Retorna o hash da reserva para o cliente
+	response := map[string]string{
+		"status":  "success",
+		"hash":    novo_bloco.Hash,
+		"message": fmt.Sprintf("Reserva confirmada para %s no ponto %s", transacao.Placa, transacao.Ponto),
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(writer).Encode(response)
+	writer.WriteHeader(http.StatusCreated)
+}
+
+func propagarBloco(bloco Bloco) {
+	jsonBloco, _ := json.Marshal(bloco)
+	for id, api := range empresasAPI {
+		if id == empresa.ID {
+			continue
+		}
+		fmt.Printf("Enviando bloco para empresa %s...\n", id)
+		resp, err := http.Post(api+"/bloco", "application/json", bytes.NewBuffer(jsonBloco))
+		if err != nil {
+			fmt.Printf("Erro ao enviar bloco para %s: %v\n", id, err)
+			continue
+		}
+		resp.Body.Close()
+	}
+}
+
 func propagarBlocoComConsenso(bloco Bloco) bool {
 	sucesso := true
 	jsonBloco, _ := json.Marshal(bloco)
+
 	for id, api := range empresasAPI {
 		if id == empresa.ID {
 			continue
@@ -564,14 +639,11 @@ func main() {
 	inicializarAPI() // carrega empresa, blockchain, chaves, bloco gênese
 	iniciarProcessadorDeBlocos()
 
+	// Inicializa os handlers REST ANTES de subir o servidor
+	inicializaREST()
+
 	//sobe a api
 	go func() {
-		http.HandleFunc("/blockchain", blockchainHandler)
-		http.HandleFunc("/bloco", receberBlocoHandler)
-		http.HandleFunc("/recarga", recargaHandler)
-		http.HandleFunc("/pagamento", pagamentoHandler)
-		http.HandleFunc("/sincronizar", sincronizarHandler)
-
 		porta := ":8" + empresa.ID
 		log.Printf("Empresa %s [%s] iniciada na porta %s", empresa.Nome, empresa.ID, porta)
 		log.Fatal(http.ListenAndServe(porta, nil))
@@ -600,5 +672,9 @@ func main() {
 		fmt.Println("Sincronização concluída")
 	}()
 
+	sincronizarComOutrasEmpresas() // Inicia sistemas de comunicação
+	inicializaMqtt(empresa.ID)
+
+	// Mantém o programa em execução
 	select {}
 }

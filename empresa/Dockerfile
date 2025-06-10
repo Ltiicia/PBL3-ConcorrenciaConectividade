@@ -1,7 +1,7 @@
 FROM golang:1.24-alpine AS builder
 WORKDIR /app
 COPY . .
-RUN go build -o empresa main.go
+RUN go build -o empresa .
 
 FROM alpine:latest
 WORKDIR /app

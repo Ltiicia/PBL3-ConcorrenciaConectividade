@@ -1,4 +1,18 @@
+version: '3.8'
+
 services:
+  # Broker MQTT
+  broker:
+    image: eclipse-mosquitto:2.0
+    container_name: broker_mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - rede_recarga
+
   empresa_001:
     build:
       context: ./empresa
@@ -12,6 +26,8 @@ services:
       - ./empresa/data:/app/data
     networks:
       - rede_recarga
+    depends_on:
+      - broker
 
   empresa_002:
     build:
@@ -26,6 +42,8 @@ services:
       - ./empresa/data:/app/data
     networks:
       - rede_recarga
+    depends_on:
+      - broker
 
   empresa_003:
     build:
@@ -40,6 +58,8 @@ services:
       - ./empresa/data:/app/data
     networks:
       - rede_recarga
+    depends_on:
+      - broker
 
   veiculo:
     build:
@@ -53,10 +73,11 @@ services:
     networks:
       - rede_recarga
     depends_on:
+      - broker
       - empresa_001
       - empresa_002
       - empresa_003
 
 networks:
   rede_recarga:
-    driver: bridge 
+    driver: bridge

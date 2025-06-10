@@ -1,0 +1,33 @@
+{
+  "veiculos": {
+    "123456": {
+      "placa": "123456",
+      "autonomia": 591.0348945726204,
+      "bateria_atual": 33.005219159267234,
+      "ultimo_login": "16:07:07 10/06/2025",
+      "historico": [
+        {
+          "data": "14:36:42 10/06/2025",
+          "origem": "Salvador",
+          "destino": "Natal",
+          "pontos_visitados": [
+            "Salvador",
+            "Maceio"
+          ],
+          "status": "RESERVAS_COMPLETAS"
+        },
+        {
+          "data": "16:10:40 10/06/2025",
+          "origem": "Salvador",
+          "destino": "Fortaleza",
+          "pontos_visitados": [
+            "Salvador",
+            "Maceio",
+            "Joao Pessoa"
+          ],
+          "status": "RESERVAS_COMPLETAS"
+        }
+      ]
+    }
+  }
+}
