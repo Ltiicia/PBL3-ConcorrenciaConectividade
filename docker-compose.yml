@@ -1,0 +1,62 @@
+services:
+  empresa_001:
+    build:
+      context: ./empresa
+      dockerfile: Dockerfile
+    container_name: empresa_001
+    environment:
+      - EMPRESA_ID=001
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./empresa/data:/app/data
+    networks:
+      - rede_recarga
+
+  empresa_002:
+    build:
+      context: ./empresa
+      dockerfile: Dockerfile
+    container_name: empresa_002
+    environment:
+      - EMPRESA_ID=002
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./empresa/data:/app/data
+    networks:
+      - rede_recarga
+
+  empresa_003:
+    build:
+      context: ./empresa
+      dockerfile: Dockerfile
+    container_name: empresa_003
+    environment:
+      - EMPRESA_ID=003
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./empresa/data:/app/data
+    networks:
+      - rede_recarga
+
+  veiculo:
+    build:
+      context: ./veiculo
+      dockerfile: Dockerfile
+    container_name: veiculo
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./empresa/data:/app/data
+    networks:
+      - rede_recarga
+    depends_on:
+      - empresa_001
+      - empresa_002
+      - empresa_003
+
+networks:
+  rede_recarga:
+    driver: bridge 
