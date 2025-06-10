@@ -180,7 +180,7 @@ func ValidarAssinatura(hash, assinatura, publica_path string) bool {
 	return erro == nil
 }
 
-func inicializar() {
+func inicializarAPI() {
 	empresa_id := os.Getenv("EMPRESA_ID")
 	if empresa_id == "" {
 		log.Fatal("EMPRESA_ID indefinido")
@@ -233,6 +233,31 @@ func inicializar() {
 		blocoGenesis.Hash = CalcularHash(blocoGenesis)
 		blockchain.Chain = append(blockchain.Chain, blocoGenesis)
 		SalvarBlockchain(chain_path, blockchain)
+	}
+}
+
+func aguardarEmpresasDisponiveis() {
+	ids := []string{"001", "002", "003"}
+	for {
+		todasOk := true
+		for _, id := range ids {
+			if id == empresa.ID {
+				continue
+			}
+			api := empresasAPI[id]
+			resp, err := http.Get(api + "/blockchain")
+			if err != nil || resp.StatusCode != 200 {
+				todasOk = false
+				fmt.Printf("[LOG] Empresa %s ainda não está disponível. Tentando novamente...\n", id)
+				break
+			}
+			resp.Body.Close()
+		}
+		if todasOk {
+			fmt.Println("Todas as empresas estão disponíveis")
+			break
+		}
+		time.Sleep(1 * time.Second)
 	}
 }
 
@@ -312,13 +337,39 @@ func validarBlockchainCompleta(chain Blockchain) bool {
 	for i := 1; i < len(chain.Chain); i++ {
 		anterior := chain.Chain[i-1]
 		atual := chain.Chain[i]
-		pubPath := "data/empresa_" + atual.Autor + "_public.pem"
-		if !ValidarBloco(atual, anterior) || !ValidarAssinatura(atual.Hash, atual.Assinatura, pubPath) {
-			fmt.Printf("Falha ao validar bloco [%d] da blockchain recebida.\n", atual.Index)
+		pub_path := "data/empresa_" + atual.Autor + "_public.pem"
+		if !ValidarBloco(atual, anterior) || !ValidarAssinatura(atual.Hash, atual.Assinatura, pub_path) {
+			fmt.Printf("Falha ao validar bloco index [%d] da blockchain\n", atual.Index)
 			return false
 		}
 	}
 	return true
+}
+
+func tentarCorrigirBlockchainCorrompida(chain_path string) bool {
+	for id, api := range empresasAPI {
+		if id == empresa.ID {
+			continue
+		}
+		fmt.Printf("Buscando blockchain válida da empresa %s para correção...\n", id)
+		resp, err := http.Get(api + "/blockchain")
+		if err != nil {
+			fmt.Printf("[LOG] Erro ao buscar blockchain de %s: %v\n", id, err)
+			continue
+		}
+		defer resp.Body.Close()
+		var chain_remota Blockchain
+		if err := json.NewDecoder(resp.Body).Decode(&chain_remota); err != nil {
+			fmt.Printf("Erro ao decodificar blockchain de %s: %v\n", id, err)
+			continue
+		}
+		if validarBlockchainCompleta(chain_remota) {
+			fmt.Printf("Blockchain válida encontrada na empresa %s. Corrigindo\n", id)
+			SalvarBlockchain(chain_path, chain_remota)
+			return true
+		}
+	}
+	return false
 }
 
 func formatarTimestamp(data_hora string) string {
@@ -351,14 +402,13 @@ func sincronizarComOutrasEmpresas() {
 				hashLocal := blockchain.Chain[len(blockchain.Chain)-1].Hash
 				hashRemoto := chain_remota.Chain[len(chain_remota.Chain)-1].Hash
 				if hashLocal == hashRemoto {
-					fmt.Printf("Blockchain já sincronizada com a empresa %s.\n", id)
 					continue
 				}
 			}
 			if len(chain_remota.Chain) > len(blockchain.Chain) && validarBlockchainCompleta(chain_remota) {
 				blockchain = chain_remota
 				SalvarBlockchain("data/chain_"+empresa.ID+".json", blockchain)
-				fmt.Printf("Blockchain local sincronizada com a da empresa %s.\n", id)
+				fmt.Printf("Blockchain sincronizada com a da empresa %s.\n", id)
 				sincronizou = true
 			}
 		}
@@ -511,17 +561,44 @@ func RecargasPendentes(placa string, chain Blockchain) []Transacao {
 }
 
 func main() {
-	inicializar()
+	inicializarAPI() // carrega empresa, blockchain, chaves, bloco gênese
 	iniciarProcessadorDeBlocos()
-	sincronizarComOutrasEmpresas()
 
-	http.HandleFunc("/blockchain", blockchainHandler)
-	http.HandleFunc("/bloco", receberBlocoHandler)
-	http.HandleFunc("/recarga", recargaHandler)
-	http.HandleFunc("/pagamento", pagamentoHandler)
-	http.HandleFunc("/sincronizar", sincronizarHandler)
+	//sobe a api
+	go func() {
+		http.HandleFunc("/blockchain", blockchainHandler)
+		http.HandleFunc("/bloco", receberBlocoHandler)
+		http.HandleFunc("/recarga", recargaHandler)
+		http.HandleFunc("/pagamento", pagamentoHandler)
+		http.HandleFunc("/sincronizar", sincronizarHandler)
 
-	porta := ":8" + empresa.ID
-	log.Printf("Empresa %s [%s] iniciada na porta %s", empresa.Nome, empresa.ID, porta)
-	log.Fatal(http.ListenAndServe(porta, nil))
+		porta := ":8" + empresa.ID
+		log.Printf("Empresa %s [%s] iniciada na porta %s", empresa.Nome, empresa.ID, porta)
+		log.Fatal(http.ListenAndServe(porta, nil))
+	}()
+
+	go func() {
+		time.Sleep(1 * time.Second) // pequena espera para garantir que a API subiu
+		aguardarEmpresasDisponiveis()
+		chain_path := "data/chain_" + empresa.ID + ".json"
+		if !validarBlockchainCompleta(blockchain) {
+			fmt.Println("Blockchain corrompida! Corrigindo...")
+			if !tentarCorrigirBlockchainCorrompida(chain_path) {
+				log.Fatalf("Blockchain inválida e não foi possível corrigir com as outras empresas. Arquivo %s", chain_path)
+			}
+			var erro error
+			blockchain, erro = CarregarBlockchain(chain_path)
+			if erro != nil {
+				log.Fatalf("Erro ao recarregar blockchain corrigida: %v", erro)
+			}
+			if !validarBlockchainCompleta(blockchain) {
+				log.Fatalf("Blockchain ainda inválida após tentativa de correção. Arquivo %s", chain_path)
+			}
+			fmt.Println("Blockchain corrigida com sucesso!")
+		}
+		sincronizarComOutrasEmpresas()
+		fmt.Println("Sincronização concluída")
+	}()
+
+	select {}
 }
