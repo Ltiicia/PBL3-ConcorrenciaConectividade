@@ -79,7 +79,7 @@ func CalcularHash(bloco Bloco) string {
 
 func NovoBloco(transacao Transacao, bloco_anterior Bloco, autor string, assinatura string) Bloco {
 	prox_index := bloco_anterior.Index + 1
-	timestamp := formatarTimestamp(time.Now().UTC().Format(time.RFC3339))
+	timestamp := formatarTimestamp(time.Now().Format(time.RFC3339))
 	novo_bloco := Bloco{
 		Index:        prox_index,
 		Timestamp:    timestamp,
@@ -330,6 +330,7 @@ func formatarTimestamp(data_hora string) string {
 }
 
 func sincronizarComOutrasEmpresas() {
+	fmt.Println("Sincronizando blockchain...")
 	max_tentativas := 3
 	for tentativa := 1; tentativa <= max_tentativas; tentativa++ {
 		sincronizou := false
@@ -368,6 +369,7 @@ func sincronizarComOutrasEmpresas() {
 			time.Sleep(10 * time.Second)
 		}
 	}
+	fmt.Println("Sincronização concluída")
 }
 
 // Handler para recarga
@@ -382,7 +384,7 @@ func recargaHandler(writer http.ResponseWriter, request *http.Request) {
 	ultimo := blockchain.Chain[len(blockchain.Chain)-1]
 	hash := CalcularHash(Bloco{
 		Index:        (ultimo.Index + 1),
-		Timestamp:    formatarTimestamp(time.Now().UTC().Format(time.RFC3339)),
+		Timestamp:    formatarTimestamp(time.Now().Format(time.RFC3339)),
 		Transacao:    transacao,
 		HashAnterior: ultimo.Hash,
 		Autor:        empresa.ID,
@@ -398,10 +400,14 @@ func recargaHandler(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusConflict)
 		return
 	}
+	if !propagarBlocoComConsenso(novo_bloco) {
+		fmt.Println("Consenso não atingido. Bloco REJEITADO")
+		writer.WriteHeader(http.StatusPreconditionFailed)
+		return
+	}
 	blockchain.Chain = append(blockchain.Chain, novo_bloco)
 	SalvarBlockchain("data/chain_"+empresa.ID+".json", blockchain)
-
-	propagarBloco(novo_bloco)
+	fmt.Println("Consenso atingido. Bloco ADICIONADO")
 	writer.WriteHeader(http.StatusCreated)
 }
 
@@ -416,7 +422,7 @@ func pagamentoHandler(writer http.ResponseWriter, r *http.Request) {
 	ultimo := blockchain.Chain[len(blockchain.Chain)-1]
 	hash := CalcularHash(Bloco{
 		Index:        (ultimo.Index + 1),
-		Timestamp:    formatarTimestamp(time.Now().UTC().Format(time.RFC3339)),
+		Timestamp:    formatarTimestamp(time.Now().Format(time.RFC3339)),
 		Transacao:    transacao,
 		HashAnterior: ultimo.Hash,
 		Autor:        empresa.ID,
@@ -432,6 +438,11 @@ func pagamentoHandler(writer http.ResponseWriter, r *http.Request) {
 		writer.WriteHeader(http.StatusConflict)
 		return
 	}
+	if !propagarBlocoComConsenso(novo_bloco) {
+		fmt.Println("Consenso não atingido. Bloco REJEITADO")
+		writer.WriteHeader(http.StatusPreconditionFailed)
+		return
+	}
 	blockchain.Chain = append(blockchain.Chain, novo_bloco)
 	SalvarBlockchain("data/chain_"+empresa.ID+".json", blockchain)
 	if transacao.Tipo == "PAGAMENTO" && transacao.Empresa == empresa.ID {
@@ -441,21 +452,32 @@ func pagamentoHandler(writer http.ResponseWriter, r *http.Request) {
 		data, _ := json.MarshalIndent(empresa, "", "  ")
 		os.WriteFile(empresa_path, data, 0644)
 	}
-	propagarBloco(novo_bloco)
+	fmt.Println("Consenso atingido. Bloco ADICIONADO")
 	writer.WriteHeader(http.StatusCreated)
 }
 
-func propagarBloco(bloco Bloco) {
+func propagarBlocoComConsenso(bloco Bloco) bool {
+	sucesso := true
+	jsonBloco, _ := json.Marshal(bloco)
 	for id, api := range empresasAPI {
 		if id == empresa.ID {
 			continue
 		}
-		json_bloco, _ := json.Marshal(bloco)
-		url := api + "/bloco"
-		go func(url string, data []byte) {
-			http.Post(url, "application/json", bytes.NewBuffer(data))
-		}(url, json_bloco)
+		fmt.Printf("Enviando bloco para consenso na empresa %s...\n", id)
+		resp, err := http.Post(api+"/bloco", "application/json", bytes.NewBuffer(jsonBloco))
+		if err != nil {
+			fmt.Printf("Erro ao enviar bloco para empresa %s: %v\n", id, err)
+			sucesso = false
+			break
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			fmt.Printf("Empresa %s rejeitou o bloco (status %d)\n", id, resp.StatusCode)
+			sucesso = false
+			break
+		}
+		fmt.Printf("Empresa %s aceitou o bloco.\n", id)
 	}
+	return sucesso
 }
 
 func RecargasPendentes(placa string, chain Blockchain) []Transacao {
