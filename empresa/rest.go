@@ -55,11 +55,37 @@ var status_ponto = struct {
 
 var ponto_locks = make(map[string]*sync.Mutex)
 
-// Configuração de rede (adaptável para Docker)
-var servidores = []string{
+// Configuração de rede (adaptável para Docker e máquinas físicas)
+// IPs das máquinas para execução distribuída
+var ip_maquina_001 = "192.168.1.100" // IP real do PC 1
+var ip_maquina_002 = "192.168.1.101" // IP real do PC 2
+var ip_maquina_003 = "192.168.1.102" // IP real do PC 3
+
+// Configuração para ambiente Docker (nomes dos containers)
+var servidores_docker = []string{
 	"http://empresa_001:8001",
 	"http://empresa_002:8002",
 	"http://empresa_003:8003",
+}
+
+// Configuração para máquinas físicas distribuídas
+var servidores_fisicos = []string{
+	"http://" + ip_maquina_001 + ":8001",
+	"http://" + ip_maquina_002 + ":8002",
+	"http://" + ip_maquina_003 + ":8003",
+}
+
+// Detecta automaticamente se está rodando em Docker ou máquina física
+func obterServidores() []string {
+	// Verifica se está em ambiente Docker
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		fmt.Printf("[REDE] Detectado ambiente Docker - usando nomes de containers\n")
+		return servidores_docker
+	}
+
+	// Caso contrário, usa IPs das máquinas físicas
+	fmt.Printf("[REDE] Detectado ambiente físico - usando IPs das máquinas\n")
+	return servidores_fisicos
 }
 
 // Estruturas para controle de pontos
@@ -401,6 +427,7 @@ func processarReservaLocal(placa, ponto string) string {
 // Coordena reservas com outras empresas
 func coordenarReservasExternas(placa string, pontos []string, empresaOrigem string) []ReservaResponse {
 	var respostas []ReservaResponse
+	servidores := obterServidores() // Usa detecção automática de ambiente
 
 	for _, servidor := range servidores {
 		// Não envia para si mesmo
@@ -408,23 +435,24 @@ func coordenarReservasExternas(placa string, pontos []string, empresaOrigem stri
 			continue
 		}
 
+		fmt.Printf("[REST] Enviando requisição de reserva para %s\n", servidor)
+
 		req := ReservaRequest{
 			PlacaVeiculo: placa,
 			Pontos:       pontos,
 			EmpresaID:    empresaOrigem,
 		}
 
-		jsonData, _ := json.Marshal(req)
-		resp, err := http.Post(servidor+"/reserva", "application/json", bytes.NewBuffer(jsonData))
+		var response ReservaResponse
+		err := requisicaoRest("POST", servidor+"/reserva", req, &response)
 		if err != nil {
+			fmt.Printf("[REST] Erro na comunicação com %s: %v\n", servidor, err)
 			continue
 		}
-		defer resp.Body.Close()
 
-		if resp.StatusCode == http.StatusCreated {
-			var response ReservaResponse
-			json.NewDecoder(resp.Body).Decode(&response)
+		if response.Status == "confirmado" || response.Status == "sucesso" {
 			respostas = append(respostas, response)
+			fmt.Printf("[REST] Reserva confirmada em %s: %s\n", servidor, response.Mensagem)
 		}
 	}
 
@@ -665,3 +693,76 @@ func salvarControlePontosInterno() error {
 	}
 	return os.WriteFile(fileName, file, 0644)
 }
+
+// Cancela reserva em servidor externo
+func cancelarReservaExterna(empresaID, placa string, pontos []string) {
+	servidores := obterServidores()
+	meuEndereco := obterMeuEndereco()
+
+	for _, servidor := range servidores {
+		if servidor == meuEndereco {
+			continue
+		}
+
+		// Verifica se é o servidor da empresa alvo
+		if !strings.Contains(servidor, empresaID) {
+			continue
+		}
+
+		req := ReservaRequest{
+			PlacaVeiculo: placa,
+			Pontos:       pontos,
+			EmpresaID:    empresa.ID,
+		}
+
+		var resposta ReservaResponse
+		err := requisicaoRest("POST", servidor+"/api/cancelamento", req, &resposta)
+		if err != nil {
+			fmt.Printf("[ERRO] Cancelamento não realizado no servidor %s: %v\n", empresaID, err)
+		} else {
+			fmt.Printf("[INFO] Reserva cancelada no servidor %s: %s\n", empresaID, resposta.Status)
+		}
+		break
+	}
+}
+
+// Propaga bloco para outras empresas (coordenação de blockchain)
+func propagarBlocoDistribuido(bloco Bloco) {
+	servidores := obterServidores()
+	meuEndereco := obterMeuEndereco()
+
+	fmt.Printf("[BLOCKCHAIN] Propagando bloco %s para outras empresas\n", bloco.Hash)
+	for _, servidor := range servidores {
+		if servidor == meuEndereco {
+			continue
+		}
+
+		go func(servidor_url string) {
+			err := requisicaoRest("POST", servidor_url+"/bloco", bloco, nil)
+			if err != nil {
+				fmt.Printf("[BLOCKCHAIN] Erro ao propagar para %s: %v\n", servidor_url, err)
+			} else {
+				fmt.Printf("[BLOCKCHAIN] Bloco propagado com sucesso para %s\n", servidor_url)
+			}
+		}(servidor)
+	}
+}
+
+// Obter endereço da empresa atual baseado no ambiente
+func obterMeuEndereco() string {
+	servidores := obterServidores()
+	for _, servidor := range servidores {
+		if strings.Contains(servidor, empresa.ID) {
+			return servidor
+		}
+	}
+	// Fallback para porta padrão
+	return fmt.Sprintf("http://localhost:800%s", empresa.ID)
+}
+
+// Alias para função de validação de blockchain (implementada no main.go)
+func ValidarBlockchain(chain Blockchain) bool {
+	return validarBlockchainCompleta(chain)
+}
+
+// Função removida - implementação está no main.go
