@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -83,6 +85,45 @@ type RecargaInfo struct {
 // Sistema de armazenamento de recargas pendentes
 var recargasPendentesStorage = make(map[string][]RecargaInfo) // placa -> recargas
 
+// Função para limpeza segura ao sair do sistema
+func limpezaSistema(placa string) {
+	fmt.Println("\n🧹 Executando limpeza do sistema...")
+
+	// Desconectar MQTT
+	desconectarMqtt()
+
+	// Remover placa da lista ativa
+	removerPlaca(placa)
+
+	// Remover sessão ativa para liberar a placa
+	err := removerSessaoAtiva(placa)
+	if err != nil {
+		fmt.Printf("⚠️  Aviso: Erro ao remover sessão: %v\n", err)
+	} else {
+		fmt.Printf("✅ Sessão da placa %s liberada com sucesso\n", placa)
+	}
+
+	fmt.Println("✅ Limpeza concluída!")
+}
+
+// Configura tratamento de sinais para limpeza em caso de interrupção
+func configurarTratamentoSinais(placa *string) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+
+	go func() {
+		<-c
+		fmt.Println("\n🛑 Sinal de interrupção recebido...")
+
+		if placa != nil && *placa != "" {
+			limpezaSistema(*placa)
+		}
+
+		fmt.Println("👋 Sistema encerrado com sucesso!")
+		os.Exit(0)
+	}()
+}
+
 func main() {
 	fmt.Println("🚗 Sistema de Veículos Elétricos com Blockchain")
 	fmt.Println("============================================")
@@ -90,6 +131,11 @@ func main() {
 
 	leitor := bufio.NewReader(os.Stdin)
 	placa_validada := false
+	var clienteID string
+	var placa_veiculo string
+
+	// Configura tratamento de sinais para limpeza automática
+	configurarTratamentoSinais(&placa_veiculo)
 
 	for !placa_validada {
 		fmt.Print("Placa: ")
@@ -101,10 +147,26 @@ func main() {
 			continue
 		}
 
+		// Verifica se a placa já está sendo usada
+		placaAtiva, mensagem := verificarPlacaAtiva(placa)
+		if placaAtiva {
+			fmt.Println(mensagem)
+			fmt.Println("🔒 Não é possível usar uma placa que já está ativa no sistema.")
+			fmt.Println("⏳ Aguarde o outro veículo encerrar a sessão ou use uma placa diferente.")
+			continue
+		}
+
 		// Tenta login ou cadastro
 		veiculo, isLogin, err := loginOuCadastro(placa)
 		if err != nil {
 			fmt.Printf("❌ Erro ao processar veículo: %v\n", err)
+			continue
+		}
+
+		// Registra sessão ativa
+		clienteID, err = registrarSessaoAtiva(placa)
+		if err != nil {
+			fmt.Printf("❌ Erro ao registrar sessão: %v\n", err)
 			continue
 		}
 
@@ -118,17 +180,15 @@ func main() {
 				fmt.Println("⚠️  Aviso: Erro ao registrar placa na lista ativa")
 			}
 		}
-
-		// Inicializa MQTT para este veículo
+		// Inicializa MQTT para este veículo usando ID único
 		fmt.Println("🔌 Conectando ao sistema MQTT...")
-		inicializaMqttVeiculo(placa)
+		inicializaMqttVeiculoComID(placa, clienteID)
 		if mqttConectado() {
 			fmt.Println("✅ Conectado ao sistema de comunicação!")
 		} else {
 			fmt.Println("⚠️  Aviso: Sistema MQTT não disponível, usando apenas HTTP")
 		}
 	}
-
 	for {
 		fmt.Println("\n ============== Menu ==============")
 		fmt.Println("1 - Programar viagem")
@@ -159,8 +219,7 @@ func main() {
 			verHistoricoViagens(placa_veiculo)
 		case "0":
 			fmt.Println("👋 Encerrando sistema...")
-			desconectarMqtt()
-			removerPlaca(placa_veiculo)
+			limpezaSistema(placa_veiculo)
 			fmt.Println("✅ Sistema encerrado com sucesso!")
 			return
 		default:
@@ -323,10 +382,9 @@ func pagarRecargasPendentes(placa string) {
 				}
 			}
 		}
-
 		fmt.Printf("✅ Pagamento realizado para recarga em %s!\n", rec.Ponto)
 		if hashPagamento != "" {
-			fmt.Printf("🧾 Hash do pagamento: %s\n", hashPagamento[:16]+"...")
+			fmt.Printf("🧾 Hash do pagamento: %s\n", hashPagamento)
 		}
 	}
 }
@@ -435,6 +493,9 @@ func removerPlaca(placa string) {
 func programarViagem(placa string, leitor *bufio.Reader) {
 	fmt.Println("\n========== Programar Viagem ==========")
 
+	// Limpa registros de reservas confirmadas da viagem anterior
+	limparReservasConfirmadas()
+
 	// Selecionar origem
 	origem := selecionarCidade("origem", leitor)
 	if origem == "" {
@@ -451,13 +512,14 @@ func programarViagem(placa string, leitor *bufio.Reader) {
 		fmt.Println("❌ Origem e destino não podem ser iguais!")
 		return
 	}
-
 	// Calcular rota e pontos necessários
 	rota := calcularRotaViagem(origem, destino)
+	distanciaTotal := calcularDistanciaTotal(rota)
 	pontosNecessarios := calcularPontosRecarga(rota, &veiculo_atual)
 
 	fmt.Printf("\n🗺️  Rota planejada: %s → %s\n", cidadeParaID[origem], cidadeParaID[destino])
 	fmt.Printf("📍 Cidades na rota: %v\n", rota)
+	fmt.Printf("📏 Distância total: %.1f km\n", distanciaTotal)
 
 	if len(pontosNecessarios) == 0 {
 		fmt.Println("✅ Para este trajeto não será necessário recarregar!")
@@ -481,41 +543,28 @@ func programarViagem(placa string, leitor *bufio.Reader) {
 		fmt.Println("❌ Viagem cancelada!")
 		return
 	}
+	// Realizar reservas atômicas - todos os pontos devem ser reservados com sucesso
+	fmt.Println("\n🔄 Realizando reservas atômicas...")
+	fmt.Println("⚠️  Todos os pontos devem ser reservados com sucesso, ou nenhum será reservado!")
+	reservasConfirmadas := fazerReservasAtomicas(placa, pontosNecessarios)
 
-	// Realizar reservas por ponto individual
-	fmt.Println("\n🔄 Realizando reservas individuais por ponto...")
-	reservasConfirmadas := make(map[string]string) // ponto -> hash
-
-	for _, ponto := range pontosNecessarios {
-		empresaID := pontoParaEmpresa[ponto]
-		if empresaID == "" {
-			fmt.Printf("❌ Erro: Empresa não encontrada para %s\n", ponto)
-			continue
-		}
-
-		fmt.Printf("📍 Tentando reservar ponto %s na empresa %s...\n", ponto, empresaID)
-		hash := fazerReservaAtomica(placa, ponto, empresaID)
-		if hash != "" {
-			fmt.Printf("✅ Reserva confirmada para %s - Hash: %s\n", ponto, hash[:16]+"...")
-			reservasConfirmadas[ponto] = hash
-		} else {
-			fmt.Printf("❌ Falha na reserva para %s\n", ponto)
-		}
-	}
-
-	// Verificar se pelo menos uma reserva foi confirmada
+	// Verificar se todas as reservas foram confirmadas
 	if len(reservasConfirmadas) == 0 {
-		fmt.Println("\n❌ Não foi possível realizar nenhuma reserva! Viagem cancelada.")
+		fmt.Println("\n❌ Não foi possível realizar nenhuma reserva! Pontos não disponíveis.")
+		fmt.Println("💡 Tente novamente mais tarde quando os pontos estiverem disponíveis.")
 		return
 	}
 
-	// Determinar status da viagem
-	status := "RESERVAS_PARCIAIS"
-	if len(reservasConfirmadas) == len(pontosNecessarios) {
-		status = "RESERVAS_COMPLETAS"
+	if len(reservasConfirmadas) < len(pontosNecessarios) {
+		fmt.Printf("\n❌ Reserva atômica falhou! Apenas %d/%d pontos estavam disponíveis.\n", len(reservasConfirmadas), len(pontosNecessarios))
+		fmt.Println("💡 Tente novamente mais tarde quando todos os pontos estiverem disponíveis.")
+		// Nota: O cancelamento das reservas parciais já foi feito na função fazerReservasAtomicas
+		return
 	}
 
-	fmt.Printf("\n✅ Viagem programada! %d/%d reservas confirmadas\n", len(reservasConfirmadas), len(pontosNecessarios))
+	// Todas as reservas foram bem-sucedidas
+	status := "RESERVAS_COMPLETAS"
+	fmt.Printf("\n✅ Reserva atômica bem-sucedida! %d/%d pontos reservados com sucesso!\n", len(reservasConfirmadas), len(pontosNecessarios))
 
 	// Iniciar simulação da viagem
 	fmt.Println("\n🚗 Iniciando simulação da viagem...")
@@ -531,7 +580,7 @@ func programarViagem(placa string, leitor *bufio.Reader) {
 
 // Fazer reserva atômica com melhor controle de concorrência
 func fazerReservaAtomica(placa, ponto, empresaID string) string {
-	fmt.Printf("🔄 Fazendo reserva para %s no ponto %s...\n", placa, ponto)
+	// fmt.Printf("🔄 Fazendo reserva para %s no ponto %s...\n", placa, ponto)
 
 	// Canal para controlar timeout e resposta
 	respChan := make(chan string, 1)
@@ -812,11 +861,8 @@ func verHistoricoCompleto(placa string) {
 		} else {
 			valorStr = "-"
 		}
-
-		hashAbrev := bloco.Hash
-		if len(hashAbrev) > 16 {
-			hashAbrev = hashAbrev[:16] + "..."
-		}
+		// Hash completo para verificação
+		hashCompleto := bloco.Hash
 
 		fmt.Printf("   %s | %s %-7s | %-12s | %-7s | %-8s | %s\n",
 			bloco.Timestamp,
@@ -825,7 +871,7 @@ func verHistoricoCompleto(placa string) {
 			bloco.Transacao.Ponto,
 			bloco.Transacao.Empresa,
 			valorStr,
-			hashAbrev)
+			hashCompleto)
 	}
 
 	fmt.Printf("\n📝 Total de transações exibidas: %d\n", len(todasTransacoes))
@@ -924,12 +970,11 @@ func simularViagemComRecargas(placa, origem, destino string, reservasConfirmadas
 		// Simular recarga
 		empresaID := pontoParaEmpresa[ponto]
 		hashReserva := reservasConfirmadas[ponto]
-
 		recargaInfo := realizarRecargaSimulada(placa, ponto, empresaID, hashReserva)
 		if recargaInfo.HashRecarga != "" {
 			recargasRealizadas = append(recargasRealizadas, recargaInfo)
 			fmt.Printf("✅ Recarga concluída em %s!\n", ponto)
-			fmt.Printf("🧾 Hash da recarga: %s\n", recargaInfo.HashRecarga[:16]+"...")
+			fmt.Printf("🧾 Hash da recarga: %s\n", recargaInfo.HashRecarga)
 			fmt.Printf("💰 Valor: R$ %.2f (%.1f kWh)\n", recargaInfo.Valor, recargaInfo.WattsHora)
 		} else {
 			fmt.Printf("❌ Erro na recarga em %s\n", ponto)
@@ -1112,13 +1157,12 @@ func processarPagamentosRecargas(placa string) {
 			if hashPagamento == "" {
 				hashPagamento = fmt.Sprintf("PAGAMENTO_%s_%s_%d", recarga.Ponto, placa, time.Now().Unix())
 			}
-
 			// Atualizar status da recarga
 			recargas[i].Pago = true
 			recargas[i].HashPagamento = hashPagamento
 
 			fmt.Printf("✅ Pagamento realizado com sucesso!\n")
-			fmt.Printf("🧾 Hash do pagamento: %s\n", hashPagamento[:16]+"...")
+			fmt.Printf("🧾 Hash do pagamento: %s\n", hashPagamento)
 
 			totalPago += recarga.Valor
 			pagamentosRealizados++
@@ -1151,4 +1195,133 @@ func processarPagamentosRecargas(placa string) {
 		// Limpar storage quando tudo estiver pago
 		delete(recargasPendentesStorage, placa)
 	}
+}
+
+// Fazer reservas atômicas - todos os pontos devem ser reservados ou nenhum
+func fazerReservasAtomicas(placa string, pontosNecessarios []string) map[string]string {
+	fmt.Println("🔄 Iniciando processo de reserva atômica...")
+
+	// Fase 1: Verificar disponibilidade de todos os pontos
+	fmt.Println("📋 Fase 1: Verificando disponibilidade de todos os pontos...")
+	pontosDisponiveis := make(map[string]string) // ponto -> empresaID
+
+	for _, ponto := range pontosNecessarios {
+		empresaID := pontoParaEmpresa[ponto]
+		if empresaID == "" {
+			fmt.Printf("❌ Erro: Empresa não encontrada para %s\n", ponto)
+			return make(map[string]string) // Retorna vazio se algum ponto não tem empresa
+		}
+		pontosDisponiveis[ponto] = empresaID
+		fmt.Printf("✓ Ponto %s mapeado para empresa %s\n", ponto, empresaID)
+	}
+
+	// Fase 2: Tentar reservar todos os pontos simultaneamente
+	fmt.Println("📋 Fase 2: Tentando reservar todos os pontos simultaneamente...")
+	reservasConfirmadas := make(map[string]string) // ponto -> hash
+	reservasFalhas := make([]string, 0)
+
+	// Tenta reservar cada ponto
+	for ponto, empresaID := range pontosDisponiveis {
+		fmt.Printf("🔄 Reservando %s na empresa %s...\n", ponto, empresaID)
+		hash := fazerReservaAtomica(placa, ponto, empresaID)
+		if hash != "" {
+			reservasConfirmadas[ponto] = hash
+			fmt.Printf("✅ Sucesso: %s reservado - Hash: %s\n", ponto, hash)
+		} else {
+			reservasFalhas = append(reservasFalhas, ponto)
+			fmt.Printf("❌ Falha: %s não pôde ser reservado\n", ponto)
+		}
+	}
+
+	// Fase 3: Verificar se todas as reservas foram bem-sucedidas
+	if len(reservasFalhas) > 0 {
+		fmt.Printf("❌ Reserva atômica falhou! %d pontos não disponíveis: %v\n", len(reservasFalhas), reservasFalhas)
+		fmt.Println("🔄 Cancelando reservas parciais...")
+
+		// Cancela todas as reservas que foram feitas com sucesso
+		cancelarReservasParciais(placa, reservasConfirmadas)
+		return make(map[string]string) // Retorna vazio
+	}
+
+	fmt.Printf("✅ Reserva atômica bem-sucedida! Todos os %d pontos foram reservados!\n", len(reservasConfirmadas))
+	return reservasConfirmadas
+}
+
+// Cancela reservas que foram feitas parcialmente quando a reserva atômica falha
+func cancelarReservasParciais(placa string, reservasParciais map[string]string) {
+	if len(reservasParciais) == 0 {
+		return
+	}
+
+	fmt.Printf("🔄 Cancelando %d reservas parciais...\n", len(reservasParciais))
+
+	// Ativar supressão de mensagens automáticas de cancelamento
+	suprimirMensagensCancelamento = true
+	defer func() {
+		suprimirMensagensCancelamento = false // Reativar mensagens após o cancelamento
+	}()
+
+	for ponto, hash := range reservasParciais {
+		empresaID := pontoParaEmpresa[ponto]
+		if empresaID == "" {
+			continue
+		}
+
+		fmt.Printf("❌ Cancelando reserva de %s (Hash: %s)...\n", ponto, hash)
+
+		// Tenta cancelar via MQTT primeiro
+		if mqttConectado() {
+			cancelarReservaMqtt(placa, ponto)
+		} else {
+			// Fallback para HTTP
+			cancelarReservaHTTP(placa, ponto, empresaID)
+		}
+	}
+
+	fmt.Println("✅ Cancelamento de reservas parciais concluído")
+}
+
+// Cancela reserva via MQTT
+func cancelarReservaMqtt(placa, ponto string) {
+	if mqttClientVeiculo != nil && mqttClientVeiculo.IsConnected() {
+		mensagem := fmt.Sprintf("CANCELAR,%s,%s", placa, ponto)
+		token := mqttClientVeiculo.Publish("mensagens/cliente", 0, false, mensagem)
+		token.Wait()
+		fmt.Printf("📡 Cancelamento enviado via MQTT para %s\n", ponto)
+	}
+}
+
+// Cancela reserva via HTTP
+func cancelarReservaHTTP(placa, ponto, empresaID string) {
+	type CancelRequest struct {
+		PlacaVeiculo string   `json:"placa_veiculo"`
+		Pontos       []string `json:"pontos"`
+	}
+
+	req := CancelRequest{
+		PlacaVeiculo: placa,
+		Pontos:       []string{ponto},
+	}
+
+	jsonData, _ := json.Marshal(req)
+	resp, err := http.Post(empresasAPI[empresaID]+"/cancelamento", "application/json", bytes.NewBuffer(jsonData))
+
+	if err != nil || resp.StatusCode != 200 {
+		fmt.Printf("⚠️  Erro ao cancelar via HTTP: %v\n", err)
+	} else {
+		fmt.Printf("✅ Cancelamento HTTP bem-sucedido para %s\n", ponto)
+	}
+}
+
+func init() {
+	// Tratamento de sinais para desligamento gracioso
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-signalChan
+		fmt.Println("\n🔌 Desconectando MQTT e encerrando o programa...")
+		desconectarMqtt()
+		os.Exit(0)
+	}()
 }

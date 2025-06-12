@@ -10,16 +10,18 @@ import (
 
 var mqttClientVeiculo mqtt.Client
 var mensagemRecebida chan string
+var reservasConfirmadas map[string]bool // Para evitar mensagens duplicadas
+var suprimirMensagensCancelamento bool  // Para controlar quando não exibir mensagens de cancelamento automático
 
 // Inicializa cliente MQTT para o veículo
 func inicializaMqttVeiculo(placa string) {
+	reservasConfirmadas = make(map[string]bool)
 	mensagemRecebida = make(chan string, 10)
 
 	opts := mqtt.NewClientOptions().AddBroker("tcp://broker:1883")
 	opts.SetClientID("veiculo_" + placa)
 
 	opts.OnConnect = func(c mqtt.Client) {
-		fmt.Printf("[MQTT] Veículo %s conectado ao broker\n", placa)
 
 		// Subscribe para mensagens direcionadas a este veículo
 		topico := "mensagens/cliente/" + placa
@@ -33,6 +35,39 @@ func inicializaMqttVeiculo(placa string) {
 		}
 	}
 
+	opts.OnConnectionLost = func(c mqtt.Client, err error) {
+		fmt.Printf("[MQTT] Conexão perdida: %v\n", err)
+	}
+
+	mqttClientVeiculo = mqtt.NewClient(opts)
+	if token := mqttClientVeiculo.Connect(); token.Wait() && token.Error() != nil {
+		fmt.Printf("[MQTT] Erro ao conectar: %v\n", token.Error())
+		return
+	}
+}
+
+// Inicializa cliente MQTT para o veículo com ID único para evitar conflitos
+func inicializaMqttVeiculoComID(placa, clienteID string) {
+	reservasConfirmadas = make(map[string]bool)
+	mensagemRecebida = make(chan string, 10)
+
+	opts := mqtt.NewClientOptions().AddBroker("tcp://broker:1883")
+	opts.SetClientID(clienteID) // Usa ID único ao invés de apenas a placa
+
+	opts.OnConnect = func(c mqtt.Client) {
+		fmt.Printf("[MQTT] Conectado com ID único: %s\n", clienteID)
+
+		// Subscribe para mensagens direcionadas a este veículo
+		topico := "mensagens/cliente/" + placa
+		if token := c.Subscribe(topico, 0, handleMensagemVeiculo); token.Wait() && token.Error() != nil {
+			fmt.Printf("[MQTT] Erro ao assinar tópico %s: %v\n", topico, token.Error())
+		}
+
+		// Subscribe para mensagens gerais
+		if token := c.Subscribe("mensagens/geral", 0, handleMensagemGeral); token.Wait() && token.Error() != nil {
+			fmt.Printf("[MQTT] Erro ao assinar tópico geral: %v\n", token.Error())
+		}
+	}
 	opts.OnConnectionLost = func(c mqtt.Client, err error) {
 		fmt.Printf("[MQTT] Conexão perdida: %v\n", err)
 	}
@@ -74,19 +109,20 @@ func processarMensagemVeiculo(mensagem string) {
 	}
 
 	tipo := partes[0]
-
 	switch tipo {
 	case "reserva_confirmada":
 		if len(partes) >= 3 {
 			ponto := partes[1]
 			hash := partes[2]
-			fmt.Printf("✅ Reserva confirmada para %s - Hash: %s\n", ponto, hash)
-		}
-	case "reserva_negada":
-		if len(partes) >= 3 {
-			ponto := partes[1]
-			motivo := partes[2]
-			fmt.Printf("❌ Reserva negada para %s - Motivo: %s\n", ponto, motivo)
+
+			// Evita mensagens duplicadas para o mesmo ponto
+			chaveReserva := fmt.Sprintf("reserva_%s", ponto)
+			if !reservasConfirmadas[chaveReserva] {
+				reservasConfirmadas[chaveReserva] = true
+				fmt.Printf("✅ Reserva confirmada para %s\n", ponto)
+				fmt.Printf("🔑 Hash completo: %s\n", hash)
+				fmt.Printf("📝 Anote este hash para verificação posterior!\n")
+			}
 		}
 	case "reserva_erro":
 		if len(partes) >= 3 {
@@ -99,7 +135,9 @@ func processarMensagemVeiculo(mensagem string) {
 			ponto := partes[1]
 			valor := partes[2]
 			hash := partes[3]
-			fmt.Printf("🔋 Recarga confirmada em %s - Valor: R$ %s - Hash: %s\n", ponto, valor, hash)
+			fmt.Printf("🔋 Recarga confirmada em %s - Valor: R$ %s\n", ponto, valor)
+			fmt.Printf("🔑 Hash completo: %s\n", hash)
+			fmt.Printf("📝 Anote este hash para verificação posterior!\n")
 		}
 	case "recarga_negada":
 		if len(partes) >= 3 {
@@ -112,7 +150,15 @@ func processarMensagemVeiculo(mensagem string) {
 			ponto := partes[1]
 			valor := partes[2]
 			hash := partes[3]
-			fmt.Printf("💳 Pagamento confirmado para %s - Valor: R$ %s - Hash: %s\n", ponto, valor, hash)
+			fmt.Printf("💳 Pagamento confirmado para %s - Valor: R$ %s\n", ponto, valor)
+			fmt.Printf("🔑 Hash completo: %s\n", hash)
+			fmt.Printf("📝 Anote este hash para verificação posterior!\n")
+		}
+	case "ponto_liberado":
+		if len(partes) >= 3 {
+			ponto := partes[1]
+			motivo := partes[2]
+			fmt.Printf("🔓 Ponto %s foi liberado automaticamente - %s\n", ponto, motivo)
 		}
 	case "status_resposta":
 		if len(partes) >= 6 {
@@ -125,10 +171,13 @@ func processarMensagemVeiculo(mensagem string) {
 				recargas, valorRecargas, pagamentos, valorPagamentos, saldo)
 		}
 	case "reserva_cancelada":
-		if len(partes) >= 3 {
+		if len(partes) >= 3 && !suprimirMensagensCancelamento {
 			ponto := partes[1]
 			motivo := partes[2]
-			fmt.Printf("🚫 Reserva cancelada para %s - Motivo: %s\n", ponto, motivo)
+			// Só exibe se não estiver suprimindo mensagens de cancelamento automático
+			if !strings.Contains(motivo, "Nenhuma reserva encontrada") {
+				fmt.Printf("🚫 Reserva cancelada para %s - Motivo: %s\n", ponto, motivo)
+			}
 		}
 	case "ponto_desconectado":
 		if len(partes) >= 3 {
@@ -137,7 +186,7 @@ func processarMensagemVeiculo(mensagem string) {
 			fmt.Printf("📴 Ponto %s desconectado - %s\n", ponto, mensagem)
 		}
 	default:
-		fmt.Printf("❓ Mensagem não reconhecida: %s\n", mensagem)
+		// fmt.Printf("❓ Mensagem não reconhecida: %s\n", mensagem)
 	}
 }
 
@@ -156,6 +205,11 @@ func enviarMensagemMqtt(topico, mensagem string) {
 func solicitarReservaMqtt(placa, ponto string) {
 	mensagem := fmt.Sprintf("RESERVA,%s,%s", placa, ponto)
 	enviarMensagemMqtt("mensagens/cliente", mensagem)
+}
+
+// Limpa o registro de reservas confirmadas (usado no início de nova viagem)
+func limparReservasConfirmadas() {
+	reservasConfirmadas = make(map[string]bool)
 }
 
 // Solicita recarga via MQTT

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,23 @@ var servidores = []string{
 	"http://empresa_003:8003",
 }
 
+// Estruturas para controle de pontos
+type PontoStatus struct {
+	Placa            string `json:"placa"`
+	TimestampReserva string `json:"timestamp_reserva"`
+	Status           string `json:"status"`
+	HashReserva      string `json:"hash_reserva"`
+}
+
+type ControlePontos struct {
+	sync.RWMutex
+	pontos map[string]PontoStatus
+}
+
+var controlePontos = ControlePontos{
+	pontos: make(map[string]PontoStatus),
+}
+
 // Inicializa o servidor REST com todos os endpoints
 func inicializaREST() {
 	// Endpoints principais
@@ -93,6 +111,12 @@ func inicializaControlePontos() {
 		status_ponto.Lock()
 		status_ponto.status[ponto] = true
 		status_ponto.Unlock()
+	}
+
+	// Carrega o controle de pontos do arquivo
+	err := carregarControlePontos()
+	if err != nil {
+		fmt.Printf("[ERRO] Falha ao carregar controle de pontos: %v\n", err)
 	}
 
 	// Inicia monitoramento periódico
@@ -368,6 +392,9 @@ func processarReservaLocal(placa, ponto string) string {
 
 	propagarBloco(novo_bloco)
 
+	// Marca ponto como reservado
+	marcarPontoReservado(ponto, placa)
+
 	return novo_bloco.Hash
 }
 
@@ -404,7 +431,7 @@ func coordenarReservasExternas(placa string, pontos []string, empresaOrigem stri
 	return respostas
 }
 
-// Handler para cancelamento de reservas
+// Handler para cancelamento de reservas com controle PBL2
 func handleCancelamento(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método não permitido", http.StatusMethodNotAllowed)
@@ -419,22 +446,43 @@ func handleCancelamento(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	reservas_mutex.Lock()
-	defer reservas_mutex.Unlock()
-
+	placa := req.PlacaVeiculo
 	cancelados := 0
-	if pontosMap, existe := reservas[req.PlacaVeiculo]; existe {
-		for _, ponto := range req.Pontos {
+
+	fmt.Printf("[HTTP] Processando cancelamento para %s (pontos: %v)\n", placa, req.Pontos)
+
+	// PBL2 CONCURRENCY: Process each point with individual locks
+	for _, ponto := range req.Pontos {
+		// PBL2 CONCURRENCY: Acquire per-point lock
+		lock := ponto_locks[ponto]
+		lock.Lock()
+
+		fmt.Printf("[HTTP] Verificando cancelamento de %s no ponto %s\n", placa, ponto)
+
+		// Check if this point is reserved by this vehicle
+		reservas_mutex.Lock()
+		pontoReservado := false
+		if pontosMap, existe := reservas[placa]; existe {
 			if _, reservado := pontosMap[ponto]; reservado {
-				delete(pontosMap, ponto)
-				cancelados++
-				fmt.Printf("[REST] Reserva cancelada para %s no ponto %s\n", req.PlacaVeiculo, ponto)
+				pontoReservado = true
 			}
 		}
+		reservas_mutex.Unlock()
+
+		if pontoReservado {
+			// PBL2 CONCURRENCY: Release point completely within lock
+			liberarPontoCompleto(ponto, placa)
+			cancelados++
+			fmt.Printf("[HTTP] Reserva cancelada para %s no ponto %s\n", placa, ponto)
+		} else {
+			fmt.Printf("[HTTP] Ponto %s não estava reservado para %s\n", ponto, placa)
+		}
+
+		lock.Unlock()
 	}
 
 	response := map[string]interface{}{
-		"placa":      req.PlacaVeiculo,
+		"placa":      placa,
 		"cancelados": cancelados,
 		"status":     "success",
 		"empresa_id": empresa.ID,
@@ -494,4 +542,126 @@ func requisicaoRest(metodo, url string, corpo interface{}, resposta interface{})
 	}
 
 	return nil
+}
+
+// Carrega o controle de pontos do arquivo
+func carregarControlePontos() error {
+	controlePontos.Lock()
+	defer controlePontos.Unlock()
+
+	fileName := fmt.Sprintf("data/controle_pontos_%s.json", empresa.ID)
+	file, err := os.ReadFile(fileName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Arquivo não existe, inicializa com pontos vazios
+			controlePontos.pontos = make(map[string]PontoStatus)
+			return nil
+		}
+		return err
+	}
+
+	return json.Unmarshal(file, &controlePontos.pontos)
+}
+
+// Salva o controle de pontos no arquivo
+func salvarControlePontos() error {
+	controlePontos.RLock()
+	defer controlePontos.RUnlock()
+
+	fileName := fmt.Sprintf("data/controle_pontos_%s.json", empresa.ID)
+	file, err := json.MarshalIndent(controlePontos.pontos, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(fileName, file, 0644)
+}
+
+// Verifica se um ponto está disponível para reserva
+func verificarPontoDisponivel(ponto, placa string) bool {
+	controlePontos.RLock()
+	defer controlePontos.RUnlock()
+
+	status, existe := controlePontos.pontos[ponto]
+	if !existe {
+		// Ponto não está no controle, significa que está livre
+		return true
+	}
+
+	// Se já está reservado para a mesma placa, permite
+	if status.Placa == placa && status.Status == "RESERVADO" {
+		return true
+	}
+
+	// Se está reservado para outra placa, não permite
+	if status.Status == "RESERVADO" && status.Placa != placa {
+		fmt.Printf("[CONTROLE] Ponto %s já reservado por %s\n", ponto, status.Placa)
+		return false
+	}
+
+	return true
+}
+
+// Marca um ponto como reservado
+func marcarPontoReservado(ponto, placa string) bool {
+	controlePontos.Lock()
+	defer controlePontos.Unlock()
+
+	// Verifica novamente dentro do lock para garantir atomicidade
+	status, existe := controlePontos.pontos[ponto]
+	if existe && status.Status == "RESERVADO" && status.Placa != placa {
+		return false
+	}
+
+	// Marca como reservado
+	controlePontos.pontos[ponto] = PontoStatus{
+		Placa:            placa,
+		TimestampReserva: time.Now().Format(time.RFC3339),
+		Status:           "RESERVADO",
+		HashReserva:      "", // Será preenchido quando a transação for criada
+	}
+
+	// Salva no arquivo
+	err := salvarControlePontosInterno()
+	if err != nil {
+		fmt.Printf("[ERRO] Falha ao salvar controle de pontos: %v\n", err)
+		return false
+	}
+
+	fmt.Printf("[CONTROLE] Ponto %s reservado para %s\n", ponto, placa)
+	return true
+}
+
+// Atualiza o hash da reserva após criar a transação
+func atualizarHashReserva(ponto, placa, hash string) {
+	controlePontos.Lock()
+	defer controlePontos.Unlock()
+
+	if status, existe := controlePontos.pontos[ponto]; existe && status.Placa == placa {
+		status.HashReserva = hash
+		controlePontos.pontos[ponto] = status
+		salvarControlePontosInterno()
+	}
+}
+
+// Libera um ponto reservado
+func liberarPonto(ponto, placa string) {
+	controlePontos.Lock()
+	defer controlePontos.Unlock()
+
+	if status, existe := controlePontos.pontos[ponto]; existe && status.Placa == placa {
+		delete(controlePontos.pontos, ponto)
+		salvarControlePontosInterno()
+		fmt.Printf("[CONTROLE] Ponto %s liberado por %s\n", ponto, placa)
+	}
+}
+
+// Função interna para salvar sem lock (deve ser chamada dentro de um lock)
+func salvarControlePontosInterno() error {
+	fileName := fmt.Sprintf("data/controle_pontos_%s.json", empresa.ID)
+	file, err := json.MarshalIndent(controlePontos.pontos, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(fileName, file, 0644)
 }

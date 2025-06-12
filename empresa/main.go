@@ -457,6 +457,12 @@ func recargaHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 	blockchain.Chain = append(blockchain.Chain, novo_bloco)
 	SalvarBlockchain("data/chain_"+empresa.ID+".json", blockchain)
+
+	// Libera automaticamente o ponto após recarga completa
+	liberarPontoCompleto(transacao.Ponto, transacao.Placa)
+
+	fmt.Printf("[HTTP] Recarga processada e ponto %s liberado para %s - Hash: %s\n",
+		transacao.Ponto, transacao.Placa, novo_bloco.Hash)
 	fmt.Println("Consenso atingido. Bloco ADICIONADO")
 	writer.WriteHeader(http.StatusCreated)
 }
@@ -506,7 +512,7 @@ func pagamentoHandler(writer http.ResponseWriter, r *http.Request) {
 	writer.WriteHeader(http.StatusCreated)
 }
 
-// Handler para reserva
+// Handler para reserva com controle de concorrência PBL2
 func reservaHandler(writer http.ResponseWriter, request *http.Request) {
 	var transacao Transacao
 	if erro := json.NewDecoder(request.Body).Decode(&transacao); erro != nil {
@@ -528,8 +534,31 @@ func reservaHandler(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	ponto := transacao.Ponto
+	placa := transacao.Placa
+
+	// PBL2 CONCURRENCY: Acquire per-point lock before any operations
+	lock := ponto_locks[ponto]
+	lock.Lock()
+	defer lock.Unlock()
+
+	fmt.Printf("[HTTP] Processando reserva para %s no ponto %s\n", placa, ponto)
+
+	// PBL2 CONCURRENCY: Check point availability within lock
+	if !marcarPontoReservado(ponto, placa) {
+		fmt.Printf("[HTTP] Ponto %s não disponível para %s\n", ponto, placa)
+		response := map[string]string{
+			"status":  "error",
+			"message": fmt.Sprintf("Ponto %s não está disponível para reserva", ponto),
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusConflict)
+		json.NewEncoder(writer).Encode(response)
+		return
+	}
+
+	// PBL2 CONCURRENCY: Process blockchain transaction within lock
 	mutex.Lock()
-	defer mutex.Unlock()
 	ultimo := blockchain.Chain[len(blockchain.Chain)-1]
 	hash := CalcularHash(Bloco{
 		Index:        (ultimo.Index + 1),
@@ -540,24 +569,51 @@ func reservaHandler(writer http.ResponseWriter, request *http.Request) {
 	})
 	assinatura, erro := AssinarBloco(hash, chave_privada_path)
 	if erro != nil {
+		mutex.Unlock()
+		// PBL2 CONCURRENCY: Rollback reservation on error
+		liberarPontoCompleto(ponto, placa)
+		fmt.Printf("[HTTP] Erro ao assinar bloco para %s: %v\n", placa, erro)
 		writer.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
 	novo_bloco := NovoBloco(transacao, ultimo, empresa.ID, assinatura)
 	if blocoDuplicado(novo_bloco) {
-		fmt.Printf("Bloco duplicado detectado - index [%d] hash (%s). Rejeitando...\n", novo_bloco.Index, novo_bloco.Hash)
+		mutex.Unlock()
+		// PBL2 CONCURRENCY: Rollback reservation on duplicate
+		liberarPontoCompleto(ponto, placa)
+		fmt.Printf("[HTTP] Bloco duplicado detectado para %s - index [%d] hash (%s). Rejeitando...\n", placa, novo_bloco.Index, novo_bloco.Hash)
 		writer.WriteHeader(http.StatusConflict)
 		return
 	}
+
 	blockchain.Chain = append(blockchain.Chain, novo_bloco)
 	SalvarBlockchain("data/chain_"+empresa.ID+".json", blockchain)
+	mutex.Unlock()
+	// PBL2 CONCURRENCY: Update reservation memory within lock
+	reservas_mutex.Lock()
+	if _, existe := reservas[placa]; !existe {
+		reservas[placa] = make(map[string]string)
+	}
+	reservas[placa][ponto] = "confirmado"
+	reservas_mutex.Unlock()
+
+	// Update hash in point control
+	atualizarHashReserva(ponto, placa, novo_bloco.Hash)
+
+	// Propagate block
 	propagarBlocoComConsenso(novo_bloco)
+
+	// PBL2 CONCURRENCY: Start timeout system
+	go liberaPorTimeout(placa, []string{ponto}, 5*time.Minute)
+
+	fmt.Printf("[HTTP] Reserva confirmada para %s no ponto %s (Hash: %s)\n", placa, ponto, novo_bloco.Hash)
 
 	// Retorna o hash da reserva para o cliente
 	response := map[string]string{
 		"status":  "success",
 		"hash":    novo_bloco.Hash,
-		"message": fmt.Sprintf("Reserva confirmada para %s no ponto %s", transacao.Placa, transacao.Ponto),
+		"message": fmt.Sprintf("Reserva confirmada para %s no ponto %s", placa, ponto),
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(writer).Encode(response)
