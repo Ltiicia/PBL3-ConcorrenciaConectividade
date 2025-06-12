@@ -13,40 +13,41 @@ var mensagemRecebida chan string
 var reservasConfirmadas map[string]bool // Para evitar mensagens duplicadas
 var suprimirMensagensCancelamento bool  // Para controlar quando não exibir mensagens de cancelamento automático
 
-// Inicializa cliente MQTT para o veículo
-func inicializaMqttVeiculo(placa string) {
-	reservasConfirmadas = make(map[string]bool)
-	mensagemRecebida = make(chan string, 10)
+// Inicializa cliente MQTT para comunicação com as empresas usando placa como identificador
+// func inicializaMqttVeiculo(placa string) {
+// 	reservasConfirmadas = make(map[string]bool)
+// 	mensagemRecebida = make(chan string, 10)
 
-	opts := mqtt.NewClientOptions().AddBroker("tcp://broker:1883")
-	opts.SetClientID("veiculo_" + placa)
+// 	opts := mqtt.NewClientOptions().AddBroker("tcp://broker:1883")
+// 	opts.SetClientID("veiculo_" + placa)
 
-	opts.OnConnect = func(c mqtt.Client) {
+// 	opts.OnConnect = func(c mqtt.Client) {
 
-		// Subscribe para mensagens direcionadas a este veículo
-		topico := "mensagens/cliente/" + placa
-		if token := c.Subscribe(topico, 0, handleMensagemVeiculo); token.Wait() && token.Error() != nil {
-			fmt.Printf("[MQTT] Erro ao assinar tópico %s: %v\n", topico, token.Error())
-		}
+// 		// Subscribe para mensagens direcionadas a este veículo
+// 		topico := "mensagens/cliente/" + placa
+// 		if token := c.Subscribe(topico, 0, handleMensagemVeiculo); token.Wait() && token.Error() != nil {
+// 			fmt.Printf("[MQTT] Erro ao assinar tópico %s: %v\n", topico, token.Error())
+// 		}
 
-		// Subscribe para mensagens gerais
-		if token := c.Subscribe("mensagens/geral", 0, handleMensagemGeral); token.Wait() && token.Error() != nil {
-			fmt.Printf("[MQTT] Erro ao assinar tópico geral: %v\n", token.Error())
-		}
-	}
+// 		// Subscribe para mensagens gerais
+// 		if token := c.Subscribe("mensagens/geral", 0, handleMensagemGeral); token.Wait() && token.Error() != nil {
+// 			fmt.Printf("[MQTT] Erro ao assinar tópico geral: %v\n", token.Error())
+// 		}
+// 	}
 
-	opts.OnConnectionLost = func(c mqtt.Client, err error) {
-		fmt.Printf("[MQTT] Conexão perdida: %v\n", err)
-	}
+// 	opts.OnConnectionLost = func(c mqtt.Client, err error) {
+// 		fmt.Printf("[MQTT] Conexão perdida: %v\n", err)
+// 	}
 
-	mqttClientVeiculo = mqtt.NewClient(opts)
-	if token := mqttClientVeiculo.Connect(); token.Wait() && token.Error() != nil {
-		fmt.Printf("[MQTT] Erro ao conectar: %v\n", token.Error())
-		return
-	}
-}
+// 	mqttClientVeiculo = mqtt.NewClient(opts)
+// 	if token := mqttClientVeiculo.Connect(); token.Wait() && token.Error() != nil {
+// 		fmt.Printf("[MQTT] Erro ao conectar: %v\n", token.Error())
+// 		return
+// 	}
+// }
 
 // Inicializa cliente MQTT para o veículo com ID único para evitar conflitos
+// Inicializa cliente MQTT com ID único para evitar conflitos entre sessões simultâneas
 func inicializaMqttVeiculoComID(placa, clienteID string) {
 	reservasConfirmadas = make(map[string]bool)
 	mensagemRecebida = make(chan string, 10)
@@ -55,7 +56,7 @@ func inicializaMqttVeiculoComID(placa, clienteID string) {
 	opts.SetClientID(clienteID) // Usa ID único ao invés de apenas a placa
 
 	opts.OnConnect = func(c mqtt.Client) {
-		fmt.Printf("[MQTT] Conectado com ID único: %s\n", clienteID)
+		// fmt.Printf("[MQTT] Conectado com ID único: %s\n", clienteID)
 
 		// Subscribe para mensagens direcionadas a este veículo
 		topico := "mensagens/cliente/" + placa
@@ -80,6 +81,7 @@ func inicializaMqttVeiculoComID(placa, clienteID string) {
 }
 
 // Handler para mensagens direcionadas ao veículo
+// Processa mensagens MQTT recebidas direcionadas especificamente ao veículo
 func handleMensagemVeiculo(client mqtt.Client, msg mqtt.Message) {
 	mensagem := string(msg.Payload())
 	fmt.Printf("\n[MQTT] 📨 Mensagem recebida: %s\n", mensagem)
@@ -96,12 +98,14 @@ func handleMensagemVeiculo(client mqtt.Client, msg mqtt.Message) {
 }
 
 // Handler para mensagens gerais
+// Processa mensagens gerais do sistema (broadcasts para todos os veículos)
 func handleMensagemGeral(client mqtt.Client, msg mqtt.Message) {
 	mensagem := string(msg.Payload())
 	fmt.Printf("\n[MQTT] 📢 Mensagem geral: %s\n", mensagem)
 }
 
 // Processa mensagens recebidas pelo veículo
+// Analisa e processa diferentes tipos de mensagens recebidas via MQTT
 func processarMensagemVeiculo(mensagem string) {
 	partes := strings.Split(mensagem, ",")
 	if len(partes) < 2 {
@@ -191,6 +195,7 @@ func processarMensagemVeiculo(mensagem string) {
 }
 
 // Envia mensagem via MQTT
+// Envia mensagem para tópico específico via MQTT
 func enviarMensagemMqtt(topico, mensagem string) {
 	if mqttClientVeiculo != nil && mqttClientVeiculo.IsConnected() {
 		token := mqttClientVeiculo.Publish(topico, 0, false, mensagem)
@@ -202,35 +207,41 @@ func enviarMensagemMqtt(topico, mensagem string) {
 }
 
 // Solicita reserva via MQTT
+// Solicita reserva de ponto de recarga via MQTT
 func solicitarReservaMqtt(placa, ponto string) {
 	mensagem := fmt.Sprintf("RESERVA,%s,%s", placa, ponto)
 	enviarMensagemMqtt("mensagens/cliente", mensagem)
 }
 
 // Limpa o registro de reservas confirmadas (usado no início de nova viagem)
+// Limpa registros de reservas confirmadas para nova viagem
 func limparReservasConfirmadas() {
 	reservasConfirmadas = make(map[string]bool)
 }
 
 // Solicita recarga via MQTT
+// Solicita início de recarga em ponto específico via MQTT
 func solicitarRecargaMqtt(placa, ponto string, valor float64) {
 	mensagem := fmt.Sprintf("RECARGA,%s,%s,%.2f", placa, ponto, valor)
 	enviarMensagemMqtt("mensagens/cliente", mensagem)
 }
 
 // Solicita pagamento via MQTT
-func solicitarPagamentoMqtt(placa, ponto string, valor float64) {
-	mensagem := fmt.Sprintf("PAGAMENTO,%s,%s,%.2f", placa, ponto, valor)
-	enviarMensagemMqtt("mensagens/cliente", mensagem)
-}
+// Solicita pagamento de recarga via MQTT
+// func solicitarPagamentoMqtt(placa, ponto string, valor float64) {
+// 	mensagem := fmt.Sprintf("PAGAMENTO,%s,%s,%.2f", placa, ponto, valor)
+// 	enviarMensagemMqtt("mensagens/cliente", mensagem)
+// }
 
 // Solicita status via MQTT
-func solicitarStatusMqtt(placa string) {
-	mensagem := fmt.Sprintf("STATUS,%s", placa)
-	enviarMensagemMqtt("mensagens/cliente", mensagem)
-}
+// Solicita status atual do veículo via MQTT
+// func solicitarStatusMqtt(placa string) {
+// 	mensagem := fmt.Sprintf("STATUS,%s", placa)
+// 	enviarMensagemMqtt("mensagens/cliente", mensagem)
+// }
 
 // Aguarda resposta MQTT com timeout
+// Aguarda resposta MQTT com timeout configurável
 func aguardarRespostaMqtt(timeout time.Duration) string {
 	select {
 	case mensagem := <-mensagemRecebida:
@@ -241,6 +252,7 @@ func aguardarRespostaMqtt(timeout time.Duration) string {
 }
 
 // Desconecta cliente MQTT
+// Desconecta cliente MQTT de forma segura
 func desconectarMqtt() {
 	if mqttClientVeiculo != nil && mqttClientVeiculo.IsConnected() {
 		mqttClientVeiculo.Disconnect(250)
@@ -249,6 +261,7 @@ func desconectarMqtt() {
 }
 
 // Verifica se MQTT está conectado
+// Verifica se cliente MQTT está conectado e ativo
 func mqttConectado() bool {
 	return mqttClientVeiculo != nil && mqttClientVeiculo.IsConnected()
 }

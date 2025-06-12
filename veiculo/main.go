@@ -86,6 +86,7 @@ type RecargaInfo struct {
 var recargasPendentesStorage = make(map[string][]RecargaInfo) // placa -> recargas
 
 // Função para limpeza segura ao sair do sistema
+// Realiza limpeza completa do sistema removendo arquivos temporários e liberando recursos
 func limpezaSistema(placa string) {
 	fmt.Println("\n🧹 Executando limpeza do sistema...")
 
@@ -106,7 +107,7 @@ func limpezaSistema(placa string) {
 	fmt.Println("✅ Limpeza concluída!")
 }
 
-// Configura tratamento de sinais para limpeza em caso de interrupção
+// Configura tratamento de sinais para limpeza automática em caso de interrupção do programa
 func configurarTratamentoSinais(placa *string) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
@@ -124,6 +125,7 @@ func configurarTratamentoSinais(placa *string) {
 	}()
 }
 
+// Função principal do sistema de veículos elétricos - controla o menu e fluxo do programa
 func main() {
 	fmt.Println("🚗 Sistema de Veículos Elétricos com Blockchain")
 	fmt.Println("============================================")
@@ -192,12 +194,11 @@ func main() {
 	for {
 		fmt.Println("\n ============== Menu ==============")
 		fmt.Println("1 - Programar viagem")
-		fmt.Println("2 - Realizar recarga")
-		fmt.Println("3 - Pagar recargas pendentes")
-		fmt.Println("4 - Consultar extrato")
-		fmt.Println("5 - Verificar hash")
-		fmt.Println("6 - Ver histórico completo")
-		fmt.Println("7 - Ver histórico de viagens")
+		fmt.Println("2 - Pagar recargas pendentes")
+		fmt.Println("3 - Consultar extrato")
+		fmt.Println("4 - Verificar hash")
+		fmt.Println("5 - Ver histórico completo")
+		fmt.Println("6 - Ver histórico de viagens")
 		fmt.Println("0 - Sair")
 		fmt.Print("Selecione uma opção: ")
 		opcao, _ := leitor.ReadString('\n')
@@ -206,16 +207,14 @@ func main() {
 		case "1":
 			programarViagem(placa_veiculo, leitor)
 		case "2":
-			realizarRecarga(placa_veiculo, leitor)
-		case "3":
 			pagarRecargasPendentes(placa_veiculo)
-		case "4":
+		case "3":
 			verExtrato(placa_veiculo)
-		case "5":
+		case "4":
 			verificarHash(leitor)
-		case "6":
+		case "5":
 			verHistoricoCompleto(placa_veiculo)
-		case "7":
+		case "6":
 			verHistoricoViagens(placa_veiculo)
 		case "0":
 			fmt.Println("👋 Encerrando sistema...")
@@ -228,6 +227,7 @@ func main() {
 	}
 }
 
+// Exibe lista das cidades nordestinas com serviço de recarga disponível
 func listCapitaisNordeste() {
 	fmt.Println("\n======= Cidades com Servico de Recarga =======")
 	fmt.Println("(1) - Salvador")
@@ -242,6 +242,7 @@ func listCapitaisNordeste() {
 	fmt.Println("(0) - Retornar ao Menu")
 }
 
+// Processa recarga manual em ponto específico via MQTT ou HTTP
 func realizarRecarga(placa string, leitor *bufio.Reader) {
 	pontos := map[string]string{
 		"1": "Salvador",
@@ -314,6 +315,7 @@ func realizarRecarga(placa string, leitor *bufio.Reader) {
 	fmt.Println("✅ Recarga registrada com sucesso!")
 }
 
+// Processa pagamento de todas as recargas pendentes do veículo via HTTP
 func pagarRecargasPendentes(placa string) {
 	fmt.Println("\n💳 ========== Pagar Recargas Pendentes ==========")
 
@@ -389,6 +391,7 @@ func pagarRecargasPendentes(placa string) {
 	}
 }
 
+// Exibe extrato simplificado das transações do veículo na blockchain
 func verExtrato(placa string) {
 	chain := buscarBlockchain()
 	fmt.Println("\nExtrato de transações:")
@@ -399,6 +402,7 @@ func verExtrato(placa string) {
 	}
 }
 
+// Busca blockchain completa de qualquer empresa disponível para consulta
 func buscarBlockchain() Blockchain {
 	ids := []string{"001", "002", "003"}
 	for _, id := range ids {
@@ -417,6 +421,7 @@ func buscarBlockchain() Blockchain {
 	return Blockchain{}
 }
 
+// Identifica recargas não pagas comparando transações de recarga e pagamento na blockchain
 func recargasPendentes(placa string, chain Blockchain) []Transacao {
 	var recargas []Transacao
 	var pagamentos []Transacao
@@ -447,6 +452,7 @@ func recargasPendentes(placa string, chain Blockchain) []Transacao {
 	return pendentes
 }
 
+// Retorna ID da empresa responsável por um ponto de recarga específico
 func empresaPorPonto(ponto string) string {
 	// Usa o mapeamento atualizado do veiculo_data.go
 	if empresa, exists := pontoParaEmpresa[ponto]; exists {
@@ -455,6 +461,7 @@ func empresaPorPonto(ponto string) string {
 	return ""
 }
 
+// Cadastra nova placa no arquivo de veículos ativos do sistema
 func cadastrarPlaca(placa string) bool {
 	path := "data/veiculos.json"
 	var veiculos Veiculos
@@ -474,6 +481,7 @@ func cadastrarPlaca(placa string) bool {
 	return true
 }
 
+// Remove placa do arquivo de veículos ativos durante o logout
 func removerPlaca(placa string) {
 	path := "data/veiculos.json"
 	var veiculos Veiculos
@@ -490,6 +498,7 @@ func removerPlaca(placa string) {
 }
 
 // Programar viagem com reservas
+// Gerencia planejamento completo de viagem incluindo reservas atômicas e simulação de recargas
 func programarViagem(placa string, leitor *bufio.Reader) {
 	fmt.Println("\n========== Programar Viagem ==========")
 
@@ -579,6 +588,7 @@ func programarViagem(placa string, leitor *bufio.Reader) {
 }
 
 // Fazer reserva atômica com melhor controle de concorrência
+// Executa reserva única com tentativa MQTT primeiro e fallback HTTP
 func fazerReservaAtomica(placa, ponto, empresaID string) string {
 	// fmt.Printf("🔄 Fazendo reserva para %s no ponto %s...\n", placa, ponto)
 
@@ -625,6 +635,7 @@ func fazerReservaAtomica(placa, ponto, empresaID string) string {
 }
 
 // Tenta reserva via HTTP
+// Executa reserva via HTTP e busca hash da transação na blockchain
 func tentarReservaHTTP(placa, ponto, empresaID string) string {
 	transacao := Transacao{
 		Tipo:    "RESERVA",
@@ -710,6 +721,7 @@ func fazerReserva(placa, ponto, empresaID string) string {
 }
 
 // Verificar hash de transação
+// Interface para verificação de autenticidade de hash de transações
 func verificarHash(leitor *bufio.Reader) {
 	fmt.Println("\n========== Verificar Hash ==========")
 	fmt.Print("Digite o hash a ser verificado: ")
@@ -739,6 +751,7 @@ func verificarHash(leitor *bufio.Reader) {
 }
 
 // Verificar hash em uma empresa específica
+// Verifica se hash existe na blockchain de uma empresa específica
 func verificarHashEmpresa(hash, empresaID, api string) bool {
 	// Busca blockchain da empresa
 	resp, err := http.Get(api + "/blockchain")
@@ -770,6 +783,7 @@ func verificarHashEmpresa(hash, empresaID, api string) bool {
 }
 
 // Ver histórico completo do veículo
+// Exibe histórico detalhado de todas as transações do veículo com resumo financeiro
 func verHistoricoCompleto(placa string) {
 	fmt.Println("\n========== Histórico Completo ==========")
 	fmt.Printf("Veículo: %s\n", placa)
@@ -878,6 +892,7 @@ func verHistoricoCompleto(placa string) {
 }
 
 // Ver histórico de viagens específicas do veículo
+// Exibe histórico específico de viagens realizadas pelo veículo
 func verHistoricoViagens(placa string) {
 	dados, err := carregarDadosVeiculos()
 	if err != nil {
@@ -930,6 +945,7 @@ func verHistoricoViagens(placa string) {
 }
 
 // Simular viagem sem necessidade de recarga
+// Simula viagem curta que não requer paradas para recarga
 func simularViagemSemRecarga(placa, origem, destino string) {
 	fmt.Println("\n🚗 ========== Simulação da Viagem ==========")
 	fmt.Printf("🚀 Iniciando viagem: %s → %s\n", origem, destino)
@@ -945,6 +961,7 @@ func simularViagemSemRecarga(placa, origem, destino string) {
 }
 
 // Simular viagem com recargas
+// Simula viagem completa com paradas para recarga nos pontos reservados
 func simularViagemComRecargas(placa, origem, destino string, reservasConfirmadas map[string]string, leitor *bufio.Reader) {
 	fmt.Println("\n🚗 ========== Simulação da Viagem ==========")
 	fmt.Printf("🚀 Iniciando viagem: %s → %s\n", origem, destino)
@@ -1011,6 +1028,7 @@ func simularViagemComRecargas(placa, origem, destino string, reservasConfirmadas
 }
 
 // Realizar recarga simulada com cálculo de valores
+// Executa processo completo de recarga simulada com cálculo de valores e registro na blockchain
 func realizarRecargaSimulada(placa, ponto, empresaID, hashReserva string) RecargaInfo {
 	fmt.Printf("🔌 Iniciando recarga no ponto %s...\n", ponto)
 
@@ -1102,6 +1120,7 @@ func realizarRecargaSimulada(placa, ponto, empresaID, hashReserva string) Recarg
 }
 
 // Processar pagamentos das recargas
+// Processa pagamentos de todas as recargas pendentes com registro na blockchain
 func processarPagamentosRecargas(placa string) {
 	fmt.Println("\n💳 ========== Processando Pagamentos ==========")
 
@@ -1198,6 +1217,7 @@ func processarPagamentosRecargas(placa string) {
 }
 
 // Fazer reservas atômicas - todos os pontos devem ser reservados ou nenhum
+// Implementa reserva atômica: todos os pontos devem ser reservados com sucesso ou nenhum é reservado
 func fazerReservasAtomicas(placa string, pontosNecessarios []string) map[string]string {
 	fmt.Println("🔄 Iniciando processo de reserva atômica...")
 
@@ -1247,6 +1267,7 @@ func fazerReservasAtomicas(placa string, pontosNecessarios []string) map[string]
 	return reservasConfirmadas
 }
 
+// Cancela reservas que foram feitas parcialmente quando a reserva atômica falha
 // Cancela reservas que foram feitas parcialmente quando a reserva atômica falha
 func cancelarReservasParciais(placa string, reservasParciais map[string]string) {
 	if len(reservasParciais) == 0 {

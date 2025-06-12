@@ -106,6 +106,7 @@ func gerarDadosIniciais() (float64, float64) {
 }
 
 // Carrega dados completos dos veículos
+// Carrega dados completos dos veículos do arquivo JSON com múltiplas tentativas de caminho
 func carregarDadosVeiculos() (DadosVeiculosCompletos, error) {
 	var dados DadosVeiculosCompletos
 
@@ -142,6 +143,7 @@ func carregarDadosVeiculos() (DadosVeiculosCompletos, error) {
 }
 
 // Salva dados completos dos veículos
+// Salva dados dos veículos no arquivo JSON com múltiplas tentativas de caminho
 func salvarDadosVeiculos(dados DadosVeiculosCompletos) error {
 	// Tenta primeiro o caminho do container, depois caminho local
 	caminhos := []string{
@@ -208,6 +210,7 @@ func salvarSessoesAtivas(controle ControleSessoes) error {
 }
 
 // Verifica se uma placa já está ativa no sistema
+// Verifica se placa já está sendo usada em sessão ativa para evitar login duplo
 func verificarPlacaAtiva(placa string) (bool, string) {
 	controle, err := carregarSessoesAtivas()
 	if err != nil {
@@ -223,6 +226,7 @@ func verificarPlacaAtiva(placa string) (bool, string) {
 }
 
 // Registra uma nova sessão ativa
+// Registra nova sessão ativa e gera ID único para cliente MQTT
 func registrarSessaoAtiva(placa string) (string, error) {
 	controle, err := carregarSessoesAtivas()
 	if err != nil {
@@ -250,6 +254,7 @@ func registrarSessaoAtiva(placa string) (string, error) {
 }
 
 // Remove uma sessão ativa
+// Remove sessão ativa do veículo durante logout ou limpeza do sistema
 func removerSessaoAtiva(placa string) error {
 	controle, err := carregarSessoesAtivas()
 	if err != nil {
@@ -268,6 +273,7 @@ func removerSessaoAtiva(placa string) error {
 }
 
 // Verifica se a placa existe e faz login ou cadastro
+// Gerencia login de veículo existente ou cadastro de novo veículo no sistema
 func loginOuCadastro(placa string) (VeiculoCompleto, bool, error) {
 	dados, err := carregarDadosVeiculos()
 	if err != nil {
@@ -309,6 +315,7 @@ func loginOuCadastro(placa string) (VeiculoCompleto, bool, error) {
 }
 
 // Salva uma viagem no histórico
+// Registra viagem no histórico do veículo com informações de pontos visitados e status
 func salvarViagem(placa string, origem, destino string, pontos []string, status string) error {
 	dados, err := carregarDadosVeiculos()
 	if err != nil {
@@ -375,6 +382,7 @@ func obterPontosPorCidades(cidades []string) []PontoRecarga {
 }
 
 // Calcula a distância total de uma rota
+// Calcula distância total da rota somando distâncias entre cidades consecutivas
 func calcularDistanciaTotal(rota []string) float64 {
 	pontosRota := obterPontosPorCidades(rota)
 	if len(pontosRota) < 2 {
@@ -397,6 +405,7 @@ func calcularDistanciaTotal(rota []string) float64 {
 }
 
 // Seleção de cidade com interface melhorada
+// Interface para seleção de cidade (origem/destino) com validação de entrada
 func selecionarCidade(tipo string, leitor *bufio.Reader) string {
 	for {
 		fmt.Printf("\n======= Cidades com Serviço de Recarga =======\n")
@@ -427,6 +436,7 @@ func selecionarCidade(tipo string, leitor *bufio.Reader) string {
 }
 
 // Calcula rota entre origem e destino
+// Calcula rota de viagem entre origem e destino incluindo cidades intermediárias
 func calcularRotaViagem(origem, destino string) []string {
 	// Rota principal do Nordeste em ordem geográfica
 	rotaCompleta := []string{"Salvador", "Aracaju", "Maceio", "Recife", "Joao Pessoa", "Natal", "Fortaleza", "Teresina", "Sao Luis"}
@@ -464,6 +474,7 @@ func calcularRotaViagem(origem, destino string) []string {
 }
 
 // Calcula pontos onde é necessário recarregar baseado na autonomia e distâncias reais
+// Determina pontos de recarga necessários com base na autonomia do veículo e distâncias
 func calcularPontosRecarga(rota []string, veiculo *VeiculoCompleto) []string {
 	var pontosNecessarios []string
 	bateriaAtual := veiculo.NivelBateriaAtual
@@ -471,9 +482,6 @@ func calcularPontosRecarga(rota []string, veiculo *VeiculoCompleto) []string {
 
 	// Obtém pontos de recarga para as cidades da rota
 	pontosRota := obterPontosPorCidades(rota)
-
-	fmt.Printf("\n🚗 Simulação da viagem para o veículo [%s]:\n", veiculo.Placa)
-	fmt.Printf("🔋 Bateria inicial: %.1f%% (%.1f km de autonomia)\n", bateriaAtual, (bateriaAtual/100)*autonomiaTotal)
 
 	for i := 0; i < len(pontosRota)-1; i++ {
 		pontoAtual := pontosRota[i]
@@ -487,14 +495,6 @@ func calcularPontosRecarga(rota []string, veiculo *VeiculoCompleto) []string {
 
 		// Calcula autonomia restante em km
 		autonomiaRestante := (bateriaAtual / 100) * autonomiaTotal
-
-		if i == 0 {
-			fmt.Printf("📍 Saindo de %s - Bateria: %.1f%% (%.1f km). Próximo: %s em %.1f km\n",
-				pontoAtual.Cidade, bateriaAtual, autonomiaRestante, proximoPonto.Cidade, distanciaProximo)
-		} else {
-			fmt.Printf("📍 Passando em %s - Bateria: %.1f%% (%.1f km). Próximo: %s em %.1f km\n",
-				pontoAtual.Cidade, bateriaAtual, autonomiaRestante, proximoPonto.Cidade, distanciaProximo)
-		}
 
 		// Se não conseguir chegar na próxima cidade, precisa recarregar
 		if autonomiaRestante < distanciaProximo {
@@ -513,15 +513,15 @@ func calcularPontosRecarga(rota []string, veiculo *VeiculoCompleto) []string {
 }
 
 // Remove duplicatas de uma slice
-func removerDuplicatas(slice []string) []string {
-	keys := make(map[string]bool)
-	var result []string
+// func removerDuplicatas(slice []string) []string {
+// 	keys := make(map[string]bool)
+// 	var result []string
 
-	for _, item := range slice {
-		if !keys[item] {
-			keys[item] = true
-			result = append(result, item)
-		}
-	}
-	return result
-}
+// 	for _, item := range slice {
+// 		if !keys[item] {
+// 			keys[item] = true
+// 			result = append(result, item)
+// 		}
+// 	}
+// 	return result
+// }

@@ -69,6 +69,7 @@ var (
 	}
 )
 
+// Calcula hash SHA256 de um bloco para garantir integridade na blockchain
 func CalcularHash(bloco Bloco) string {
 	index := strconv.Itoa(bloco.Index)
 	valor := fmt.Sprintf("%.2f", bloco.Transacao.Valor)
@@ -77,6 +78,7 @@ func CalcularHash(bloco Bloco) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// Cria novo bloco na blockchain com transação, referência ao bloco anterior e assinatura
 func NovoBloco(transacao Transacao, bloco_anterior Bloco, autor string, assinatura string) Bloco {
 	prox_index := bloco_anterior.Index + 1
 	timestamp := formatarTimestamp(time.Now().Format(time.RFC3339))
@@ -92,6 +94,7 @@ func NovoBloco(transacao Transacao, bloco_anterior Bloco, autor string, assinatu
 	return novo_bloco
 }
 
+// Valida integridade de novo bloco verificando hash e referência ao bloco anterior
 func ValidarBloco(novo_bloco, bloco_anterior Bloco) bool {
 	if bloco_anterior.Index+1 != novo_bloco.Index {
 		return false
@@ -105,6 +108,7 @@ func ValidarBloco(novo_bloco, bloco_anterior Bloco) bool {
 	return true
 }
 
+// Carrega blockchain existente do arquivo JSON ou cria blockchain vazia
 func CarregarBlockchain(path string) (Blockchain, error) {
 	var chain Blockchain
 	file, erro := os.ReadFile(path)
@@ -115,6 +119,7 @@ func CarregarBlockchain(path string) (Blockchain, error) {
 	return chain, erro
 }
 
+// Salva blockchain completa no arquivo JSON
 func SalvarBlockchain(path string, chain Blockchain) error {
 	data, erro := json.MarshalIndent(chain, "", "  ")
 	if erro != nil {
@@ -123,6 +128,7 @@ func SalvarBlockchain(path string, chain Blockchain) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// Gera par de chaves RSA (privada/pública) para assinatura digital dos blocos
 func GerarChaves(privada_path, publica_path string) error {
 	privada, erro := rsa.GenerateKey(rand.Reader, 2048)
 	if erro != nil {
@@ -140,6 +146,7 @@ func GerarChaves(privada_path, publica_path string) error {
 }
 
 // assina o bloco com a chave privada da empresa
+// Assina hash do bloco usando chave privada RSA para autenticação
 func AssinarBloco(hash string, privada_path string) (string, error) {
 	privada_pem, erro := os.ReadFile(privada_path)
 	if erro != nil {
@@ -160,6 +167,7 @@ func AssinarBloco(hash string, privada_path string) (string, error) {
 }
 
 // valida a assinatura do bloco usando a chave publica da empresa
+// Valida assinatura digital do bloco usando chave pública RSA
 func ValidarAssinatura(hash, assinatura, publica_path string) bool {
 	pub_pem, erro := os.ReadFile(publica_path)
 	if erro != nil {
@@ -180,6 +188,7 @@ func ValidarAssinatura(hash, assinatura, publica_path string) bool {
 	return erro == nil
 }
 
+// Configura rotas HTTP da API REST da empresa
 func inicializarAPI() {
 	empresa_id := os.Getenv("EMPRESA_ID")
 	if empresa_id == "" {
@@ -236,6 +245,7 @@ func inicializarAPI() {
 	}
 }
 
+// Aguarda outras empresas ficarem disponíveis para sincronização da blockchain
 func aguardarEmpresasDisponiveis() {
 	ids := []string{"001", "002", "003"}
 	for {
@@ -262,12 +272,14 @@ func aguardarEmpresasDisponiveis() {
 }
 
 // exibe blockchain
+// Handler HTTP para retornar blockchain completa da empresa
 func blockchainHandler(writer http.ResponseWriter, r *http.Request) {
 	writer.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(writer).Encode(blockchain)
 }
 
 // processa transacoes em sequencia
+// Inicia processador de blocos em goroutine para validação e adição à blockchain
 func iniciarProcessadorDeBlocos() {
 	go func() {
 		for bloco := range processar_transacoes {
@@ -691,6 +703,7 @@ func RecargasPendentes(placa string, chain Blockchain) []Transacao {
 	return pendentes
 }
 
+// Função principal da empresa - inicializa servidor HTTP, MQTT e processamento de transações
 func main() {
 	inicializarAPI() // carrega empresa, blockchain, chaves, bloco gênese
 	iniciarProcessadorDeBlocos()
